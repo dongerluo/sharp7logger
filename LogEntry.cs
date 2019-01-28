@@ -84,7 +84,7 @@ class LogEntry
         result = plcDateTime.ToString("yyyy/MM/dd HH:mm:ss:fff") 
                  + "\t" + logEntryNumber.ToString() 
                  + "\t" + SRMNumber.ToString() + "\t" + logEntryType.ToString() 
-                 + "\t" + logEntryDescription.ToString() + functionName.ToString() 
+                 + "\t" + logEntryDescription.ToString() + "\t" + functionName.ToString() 
                  + "\t" + operationMode.ToString() + "\t" + faultOrWarningState.ToString() 
                  + "\t" + XPosition_mm.ToString() + "\t" + XTarget_mm.ToString() + "\t" + XSpeed_mmps.ToString() 
                  + "\t" + YPosition_mm.ToString() + "\t" + YTarget_mm.ToString() + "\t" + YSpeed_mmps.ToString() 
