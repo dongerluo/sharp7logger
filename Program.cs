@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Sharp7;
 
 namespace sharp7logger
@@ -19,77 +22,6 @@ namespace sharp7logger
             Console.WriteLine("  client 192.168.1.101");
             Console.ReadKey();
         }
-
-        //------------------------------------------------------------------------------
-        // HexDump, a very nice function, it's not mine.
-        // I found it on the net somewhere some time ago... thanks to the author ;-)
-        //------------------------------------------------------------------------------
-        static void HexDump(byte[] bytes, int Size)
-        {
-            if (bytes == null)
-                return;
-            int bytesLength = Size;
-            int bytesPerLine = 16;
-
-            char[] HexChars = "0123456789ABCDEF".ToCharArray();
-
-            int firstHexColumn =
-                8                   // 8 characters for the address
-                + 3;                  // 3 spaces
-
-            int firstCharColumn = firstHexColumn
-                + bytesPerLine * 3       // - 2 digit for the hexadecimal value and 1 space
-                + (bytesPerLine - 1) / 8 // - 1 extra space every 8 characters from the 9th
-                + 2;                  // 2 spaces 
-
-            int lineLength = firstCharColumn
-                + bytesPerLine           // - characters to show the ascii value
-                + Environment.NewLine.Length; // Carriage return and line feed (should normally be 2)
-
-            char[] line = (new String(' ', lineLength - 2) + Environment.NewLine).ToCharArray();
-            int expectedLines = (bytesLength + bytesPerLine - 1) / bytesPerLine;
-            StringBuilder result = new StringBuilder(expectedLines * lineLength);
-
-            for (int i = 0; i < bytesLength; i += bytesPerLine)
-            {
-                line[0] = HexChars[(i >> 28) & 0xF];
-                line[1] = HexChars[(i >> 24) & 0xF];
-                line[2] = HexChars[(i >> 20) & 0xF];
-                line[3] = HexChars[(i >> 16) & 0xF];
-                line[4] = HexChars[(i >> 12) & 0xF];
-                line[5] = HexChars[(i >> 8) & 0xF];
-                line[6] = HexChars[(i >> 4) & 0xF];
-                line[7] = HexChars[(i >> 0) & 0xF];
-
-                int hexColumn = firstHexColumn;
-                int charColumn = firstCharColumn;
-
-                for (int j = 0; j < bytesPerLine; j++)
-                {
-                    if (j > 0 && (j & 7) == 0) hexColumn++;
-                    if (i + j >= bytesLength)
-                    {
-                        line[hexColumn] = ' ';
-                        line[hexColumn + 1] = ' ';
-                        line[charColumn] = ' ';
-                    }
-                    else
-                    {
-                        byte b = bytes[i + j];
-                        line[hexColumn] = HexChars[(b >> 4) & 0xF];
-                        line[hexColumn + 1] = HexChars[b & 0xF];
-                        line[charColumn] = (b < 32 ? '·' : (char)b);
-                    }
-                    hexColumn += 3;
-                    charColumn++;
-                }
-                result.Append(line);
-    #if __MonoCS__
-                result.Append('\n');
-    #endif
-            }
-            Console.WriteLine(result.ToString());
-        }
     
         static bool PlcConnect(string ip, int rack, int slot)
         {
@@ -99,40 +31,53 @@ namespace sharp7logger
 
         static void PerformTasks()
         {
-            S7Client.S7CpuInfo Info = new S7Client.S7CpuInfo();
             int result;
-            
-            result = Client.GetCpuInfo(ref Info);
-            if (result == 0)
-            {
-                Console.WriteLine("  Module Type Name : " + Info.ModuleTypeName);
-                Console.WriteLine("  Serial Number    : " + Info.SerialNumber);
-                Console.WriteLine("  AS Name          : " + Info.ASName);
-                Console.WriteLine("  Module Name      : " + Info.ModuleName);
-            };
+            int startAddress = 14;
+            int numByteInEachEntry = 418;
+            int numEntries = 100;
+            int bufferSize = numByteInEachEntry * numEntries;
+            byte[] heartbeat = { 0, 1 };
+            byte[] logBuffer = new byte[bufferSize];
+            HashSet<int> currentLogEntrySet = new HashSet<int>();
+            HashSet<int> lastLogEntrySet = new HashSet<int>();
+            LogEntry logEntry = new LogEntry();
 
-            DateTime datetime = new DateTime();
-            result = Client.GetPlcDateTime(ref datetime);
-            if (result == 0)
+            // TODO: Improve with aync using IHostedService from .NET Core 2.1
+            // PollingFromDBAsync();
+            while (true)
             {
-                Console.WriteLine(datetime.ToLongDateString() + " - " 
-                                  + datetime.ToLongTimeString());
-            }
+                // Toggle the heartbeat byte
+                heartbeat[1] = (byte)((heartbeat[1] == 0) ? 1 : 0);
+                result = Client.DBWrite(1566, 0, 2, heartbeat);
 
-            int Size = 32;
-            byte[] Buffer = new byte[32]; 
-            result = Client.DBRead(1566, 80, Size, Buffer);
-            if (result == 0)
-            {
-                Console.WriteLine("Dump : " + Size.ToString() + " bytes");
-                HexDump(Buffer, Size);
+                // Read the whole DB block
+                result = Client.DBRead(1566, startAddress, bufferSize, logBuffer);
+
+                currentLogEntrySet.Clear();
+                for (int i=0; i<numEntries; i++)
+                {
+                    // Parse each log entry according to start location
+                    logEntry.Parse(logBuffer, i * numByteInEachEntry);
+
+                    // LogEntryNumber is only valid between 0..65535
+                    if (logEntry.LogEntryNumber > 0) 
+                    {
+                        currentLogEntrySet.Add(logEntry.LogEntryNumber);
+                        // Log the entry if not contained in the last cycle
+                        if (!lastLogEntrySet.Contains(logEntry.LogEntryNumber))
+                        {
+                            logger.Info(logEntry.ToString());
+                        }
+                    }
+                }
+                lastLogEntrySet = new HashSet<int>(currentLogEntrySet);
+
+                Thread.Sleep(1000);
             }
         }
 
         static void Main(string[] args)
         {
-            logger.Info("Program starting...");
-
             // Default for S7-1500
             int rack = 0, slot = 1;
 
@@ -156,8 +101,10 @@ namespace sharp7logger
                 PerformTasks();
                 Client.Disconnect();
             }
-
-            logger.Info("Program finish");
+            else
+            {
+                Console.WriteLine("Cannot connect");
+            }
         }
     }
 }
